@@ -1,0 +1,330 @@
+Enter file contents herepackage com.example.sunku.mp3;
+
+/**
+ * Created by sunku on 2015-12-05.
+ */
+
+import android.content.ContentResolver;
+import android.content.ContentUris;
+import android.content.ContentValues;
+import android.content.Context;
+import android.content.SharedPreferences;
+import android.database.Cursor;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.media.AudioManager;
+import android.net.Uri;
+import android.os.ParcelFileDescriptor;
+import android.provider.MediaStore;
+
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.util.ArrayList;
+
+
+public class Util {
+
+    static int MY_PLAYLIST_ID = -1;
+    static final String MYPLAYLIST_NAME = "MyPlayList";
+    static final String[] STAR = { "*" };
+    static final String PREFS_NAME = "MyVolumeSetting";
+    static boolean isMute;
+    static int vol;
+    static SharedPreferences settings;
+    static Context context = null;
+    static AudioManager am = null;
+
+
+    private static final BitmapFactory.Options sBitmapOptionsCache = new BitmapFactory.Options();
+    private static final Uri sArtworkUri = Uri
+            .parse("content://media/external/audio/albumart");
+
+    // Get album art for specified album. This method will not try to
+    // fall back to getting artwork directly from the file, nor will
+    // it attempt to repair the database.
+
+    public static Bitmap getArtworkQuick(Context context, int album_id, int w,
+                                         int h) {
+        // NOTE: There is in fact a 1 pixel frame in the ImageView used to
+        // display this drawable. Take it into account now, so we don't have to
+        // scale later.
+        w -= 2;
+        h -= 2;
+        ContentResolver res = context.getContentResolver();
+        Uri uri = ContentUris.withAppendedId(sArtworkUri, album_id);
+        if (uri != null) {
+            ParcelFileDescriptor fd = null;
+            try {
+                fd = res.openFileDescriptor(uri, "r");
+                int sampleSize = 1;
+
+                // Compute the closest power-of-two scale factor
+                // and pass that to sBitmapOptionsCache.inSampleSize, which will
+                // result in faster decoding and better quality
+                sBitmapOptionsCache.inJustDecodeBounds = true;
+                BitmapFactory.decodeFileDescriptor(fd.getFileDescriptor(),
+                        null, sBitmapOptionsCache);
+                int nextWidth = sBitmapOptionsCache.outWidth >> 1;
+                int nextHeight = sBitmapOptionsCache.outHeight >> 1;
+                while (nextWidth > w && nextHeight > h) {
+                    sampleSize <<= 1;
+                    nextWidth >>= 1;
+                    nextHeight >>= 1;
+                }
+
+                sBitmapOptionsCache.inSampleSize = sampleSize;
+                sBitmapOptionsCache.inJustDecodeBounds = false;
+                Bitmap b = BitmapFactory.decodeFileDescriptor(
+                        fd.getFileDescriptor(), null, sBitmapOptionsCache);
+
+                if (b != null) {
+                    // finally rescale to exactly the size we need
+                    if (sBitmapOptionsCache.outWidth != w
+                            || sBitmapOptionsCache.outHeight != h) {
+                        Bitmap tmp = Bitmap.createScaledBitmap(b, w, h, true);
+                        b.recycle();
+                        b = tmp;
+                    }
+                }
+
+                return b;
+            } catch (FileNotFoundException e) {
+            } finally {
+                try {
+                    if (fd != null)
+                        fd.close();
+                } catch (IOException e) {
+                }
+            }
+        }
+        return null;
+    }
+    public static void getPlayListInfos(Context mContext,
+                                        ArrayList<SongInfo> arrList) {
+
+        arrList.clear();
+
+        // 플레이리스트 ID를 받아온다.
+        int myPlayListID = MY_PLAYLIST_ID = idForPlayList(mContext, MYPLAYLIST_NAME);
+
+        Uri membersUri = MediaStore.Audio.Playlists.Members.getContentUri(
+                "external", myPlayListID);
+        Cursor membersCursor = mContext.getContentResolver().query(membersUri,
+                STAR, null, null, null);
+        membersCursor.moveToFirst();
+
+        String musicID = "";
+        String audioID = "";
+        String albumID = "";
+        String musicTitle = "";
+        String artist = "";
+        String playTime = "";
+
+        for (int s = 0; s < membersCursor.getCount(); s++, membersCursor
+                .moveToNext()) {
+            int musicIDCol = membersCursor
+                    .getColumnIndex(MediaStore.Audio.Playlists._ID);
+            int audioIDCOl = membersCursor
+                    .getColumnIndex(MediaStore.Audio.Playlists.Members.AUDIO_ID);
+            int albumIDCol = membersCursor
+                    .getColumnIndex(MediaStore.Audio.Playlists.Members.ALBUM_ID);
+            int musicTitleCol = membersCursor
+                    .getColumnIndex(MediaStore.Audio.Playlists.Members.TITLE);
+            int singerCol = membersCursor
+                    .getColumnIndex(MediaStore.Audio.Playlists.Members.ARTIST);
+            int playTimeCol = membersCursor
+                    .getColumnIndex(MediaStore.Audio.Playlists.Members.DURATION);
+
+            musicID = membersCursor.getString(musicIDCol);
+            audioID = membersCursor.getString(audioIDCOl);
+            albumID = membersCursor.getString(albumIDCol);
+            musicTitle = membersCursor.getString(musicTitleCol);
+            artist = membersCursor.getString(singerCol);
+            playTime = Util.milliSecToTime(membersCursor
+                    .getString(playTimeCol));
+
+            SongInfo songInfo = new SongInfo(musicID, albumID, musicTitle,
+                    artist, playTime, audioID);
+            arrList.add(songInfo);
+
+        }
+        membersCursor.close();
+
+    }
+
+    //밀리초를 시,분,초 단위로 변경
+    public static String milliSecToTime(String millisec) {
+        int hour;
+        int sec;
+        int min;
+
+        if (millisec == null || millisec.equals("") || millisec.equals("0"))
+            return "";
+
+        sec = Integer.parseInt(millisec) / 1000;
+        hour = sec / 60 / 60;
+        min = sec / 60 % 60;
+        sec = sec % 60 % 60;
+
+        if (hour > 0)
+            return String.format("%2d:%02d:%02d", hour, min, sec);
+        else
+            return String.format("%2d:%02d", min, sec);
+    }
+
+    //플레이리스트의 ID를 받아온다.
+    public static int idForPlayList(Context context, String myPlayListName) {
+        Cursor c = query(context,
+                MediaStore.Audio.Playlists.EXTERNAL_CONTENT_URI,
+                new String[] { MediaStore.Audio.Playlists._ID },
+                MediaStore.Audio.Playlists.NAME + "=?",
+                new String[] { myPlayListName },
+                MediaStore.Audio.Playlists.NAME);
+
+        int myPlayListID = intFromCursor(c);
+
+        if (myPlayListID == -1)
+            return writePlaylist(context, myPlayListName);
+        else
+            return (myPlayListID);
+
+    }
+
+    //플레이리스트가 없을경우 플레이리스트를 만들기 위한 메소드
+    public static int writePlaylist(Context context, String myPlayListName) {
+
+        int myPlayListID;
+        ContentResolver resolver = context.getContentResolver();
+
+        ContentValues values = new ContentValues(1);
+        values.put(MediaStore.Audio.Playlists.NAME, myPlayListName);
+        resolver.insert(MediaStore.Audio.Playlists.EXTERNAL_CONTENT_URI, values);
+        myPlayListID = idForPlayList(context, myPlayListName);
+
+        return myPlayListID;
+    }
+
+    public static Cursor query(Context context, Uri uri, String[] projection,
+                               String selection, String[] selectionArgs, String sortOrder) {
+        return query(context, uri, projection, selection, selectionArgs,
+                sortOrder, 0);
+    }
+
+    public static Cursor query(Context context, Uri uri, String[] projection,
+                               String selection, String[] selectionArgs, String sortOrder,
+                               int limit) {
+        try {
+            ContentResolver resolver = context.getContentResolver();
+            if (resolver == null) {
+                return null;
+
+            }
+            if (limit > 0) {
+                uri = uri.buildUpon().appendQueryParameter("limit", "" + limit)
+                        .build();
+            }
+            return resolver.query(uri, projection, selection, selectionArgs,
+                    sortOrder);
+        } catch (UnsupportedOperationException ex) {
+            return null;
+        }
+    }
+
+    private static int intFromCursor(Cursor c) {
+        int id = -1;
+        if (c != null) {
+            c.moveToFirst();
+
+            if (!c.isAfterLast()) {
+                id = c.getInt(0);
+            }
+        }
+
+        if (c != null)
+            c.close();
+
+        return id;
+    }
+
+    //볼륨 제어를 위한 AudioManager 객체를 생성
+    public static void init(Context c) {
+        context = c;
+        settings = c.getSharedPreferences(PREFS_NAME, 0);
+        isMute = settings.getBoolean("IsMute", false);
+        am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+        if (isMute) {
+            am.setStreamMute(AudioManager.STREAM_MUSIC, true);
+        } else {
+        }
+
+        vol = am.getStreamVolume(AudioManager.STREAM_MUSIC);
+
+    }
+
+    public static boolean isMute() {
+        return isMute;
+    }
+
+    public static int getVol() {
+        return vol;
+    }
+
+    public static int setVolUp() {
+        am.setStreamVolume(AudioManager.STREAM_MUSIC, vol + 1,
+                AudioManager.FLAG_PLAY_SOUND);
+        vol = am.getStreamVolume(AudioManager.STREAM_MUSIC);
+        return vol;
+    }
+
+    public static int setVolDown() {
+        am.setStreamVolume(AudioManager.STREAM_MUSIC, vol - 1,
+                AudioManager.FLAG_PLAY_SOUND);
+        vol = am.getStreamVolume(AudioManager.STREAM_MUSIC);
+        return vol;
+    }
+
+    public static void destroy() {
+        SharedPreferences.Editor editor = settings.edit();
+        editor.putBoolean("IsMute", isMute);
+        editor.commit();
+
+        if (isMute) {
+            am.setStreamMute(AudioManager.STREAM_MUSIC, false);
+            isMute = false; // 음소거 해제
+            vol = am.getStreamVolume(AudioManager.STREAM_MUSIC);
+        }
+
+    }
+
+    //플레이리스트에 곡 추가
+    public static void addToPlayList(ContentResolver resolver, int audioId,
+                                     int myPlayListID) {
+        String[] cols = new String[] { "count(*)" };
+        Uri uri = MediaStore.Audio.Playlists.Members.getContentUri("external",
+                myPlayListID);
+        Cursor cur = resolver.query(uri, cols, null, null, null);
+        cur.moveToFirst();
+        final int base = cur.getInt(0);
+        cur.close();
+        ContentValues values = new ContentValues();
+
+        values.put(MediaStore.Audio.Playlists.Members.PLAY_ORDER,
+                Integer.valueOf(base + audioId));
+        values.put(MediaStore.Audio.Playlists.Members.AUDIO_ID, audioId);
+        resolver.insert(uri, values);
+
+    }
+
+    //플레이리스트 안의 곡 삭제
+    public static void removeFromPlaylist(ContentResolver resolver, int id,
+                                          int myPlayListID) {
+        String[] cols = new String[] { "count(*)" };
+        Uri uri = MediaStore.Audio.Playlists.Members.getContentUri("external",
+                myPlayListID);
+        Cursor cur = resolver.query(uri, cols, null, null, null);
+        cur.moveToFirst();
+        cur.close();
+        resolver.delete(uri, MediaStore.Audio.Playlists.Members._ID + " = "
+                + id, null);
+    }
+}
